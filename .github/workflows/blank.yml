@@ -1,0 +1,185 @@
+name: CI-CD FastAPI ML model to Azure ACR and ACI
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: iris-api
+  CONTAINER_NAME: aci-modelo-iris-api
+  LOCATION: westeurope
+  PORT: 8000
+
+jobs:
+  build-test-push-deploy:
+    name: Build, test, push and deploy to ACI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip show joblib
+
+      - name: Train and save model
+        run: |
+          python app/train_model.py
+          test -f app/model/iris_model.joblib
+
+      - name: Run unit tests with pytest
+        run: |
+          python -m pytest -q
+
+      - name: Login to Azure Container Registry
+        uses: azure/docker-login@v2
+        with:
+          login-server: ${{ secrets.REGISTRY_LOGIN_SERVER }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build Docker image
+        run: |
+          docker build -t iris-api-local:latest .
+
+      - name: Run tests inside the Docker image
+        run: |
+          docker run --rm iris-api-local:latest python -m pytest -q
+
+      - name: Run container smoke test
+        run: |
+          docker run -d --name iris-api-test -p ${{ env.PORT }}:${{ env.PORT }} iris-api-local:latest
+
+          echo "Esperando a que arranque la API..."
+          for i in {1..20}; do
+            if curl --fail http://localhost:${{ env.PORT }}/health; then
+              echo "API arrancada correctamente"
+              break
+            fi
+            echo "Intento $i: API todavía no disponible"
+            sleep 3
+          done
+
+          curl --fail http://localhost:${{ env.PORT }}/health
+          curl --fail http://localhost:${{ env.PORT }}/docs
+
+          docker logs iris-api-test
+          docker stop iris-api-test
+          docker rm iris-api-test
+
+      - name: Tag and push image to Azure Container Registry
+        env:
+          RAW_LOGIN_SERVER: ${{ secrets.REGISTRY_LOGIN_SERVER }}
+          RAW_IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          CLEAN_SERVER=$(echo "$RAW_LOGIN_SERVER" | sed -e 's/https:\/\///g' -e 's/http:\/\///g' | tr -d '\r' | tr -d ' ' | tr '[:upper:]' '[:lower:]')
+          IMAGE_LOWER=$(echo "$RAW_IMAGE_NAME" | tr -d '\r' | tr -d ' ' | tr '[:upper:]' '[:lower:]')
+
+          IMAGE_SHA="${CLEAN_SERVER}/${IMAGE_LOWER}:${{ github.sha }}"
+          IMAGE_LATEST="${CLEAN_SERVER}/${IMAGE_LOWER}:latest"
+
+          docker tag iris-api-local:latest $IMAGE_SHA
+          docker tag iris-api-local:latest $IMAGE_LATEST
+
+          docker push $IMAGE_SHA
+          docker push $IMAGE_LATEST
+
+          echo "IMAGE_FINAL_TAG=$IMAGE_SHA" >> $GITHUB_ENV
+          echo "ACR_CLEAN_SERVER=$CLEAN_SERVER" >> $GITHUB_ENV
+
+      # =========================================================================
+      # DESPLIEGUE DIRECTO POR API REST
+      # Sin azure/login y sin Service Principal.
+      # Pensado para Azure for Students cuando no se puede crear SP.
+      # =========================================================================
+      - name: Deploy to Azure Container Instances via API REST
+        run: |
+          cat <<EOF_JSON > deployment.json
+          {
+            "location": "${{ env.LOCATION }}",
+            "properties": {
+              "containers": [
+                {
+                  "name": "${{ env.CONTAINER_NAME }}",
+                  "properties": {
+                    "image": "${{ env.IMAGE_FINAL_TAG }}",
+                    "ports": [
+                      {
+                        "port": ${{ env.PORT }},
+                        "protocol": "TCP"
+                      }
+                    ],
+                    "environmentVariables": [],
+                    "resources": {
+                      "requests": {
+                        "cpu": 1.0,
+                        "memoryInGB": 1.0
+                      }
+                    }
+                  }
+                }
+              ],
+              "imageRegistryCredentials": [
+                {
+                  "server": "${{ env.ACR_CLEAN_SERVER }}",
+                  "username": "${{ secrets.REGISTRY_USERNAME }}",
+                  "password": "${{ secrets.REGISTRY_PASSWORD }}"
+                }
+              ],
+              "osType": "Linux",
+              "restartPolicy": "Always",
+              "ipAddress": {
+                "type": "Public",
+                "ports": [
+                  {
+                    "port": ${{ env.PORT }},
+                    "protocol": "TCP"
+                  }
+                ],
+                "dnsNameLabel": "${{ secrets.DNS_LABEL }}"
+              }
+            }
+          }
+          EOF_JSON
+
+          echo "JSON de despliegue generado:"
+          cat deployment.json
+
+          echo "Desplegando en Azure Container Instances mediante Azure Management API..."
+          curl --fail-with-body -X PUT \
+            -H "Authorization: Bearer ${{ secrets.AZURE_BEARER_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d @deployment.json \
+            "https://management.azure.com/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ secrets.RESOURCE_GROUP }}/providers/Microsoft.ContainerInstance/containerGroups/${{ env.CONTAINER_NAME }}?api-version=2023-05-01"
+
+          echo "Despliegue solicitado correctamente."
+          echo "URL estimada: http://${{ secrets.DNS_LABEL }}.${{ env.LOCATION }}.azurecontainer.io:${{ env.PORT }}/health"
+
+      - name: Wait and test deployed ACI endpoint
+        run: |
+          PUBLIC_URL="http://${{ secrets.DNS_LABEL }}.${{ env.LOCATION }}.azurecontainer.io:${{ env.PORT }}"
+
+          echo "Esperando a que ACI publique la API en $PUBLIC_URL ..."
+          sleep 30
+
+          for i in {1..30}; do
+            if curl --fail "$PUBLIC_URL/health"; then
+              echo "ACI responde correctamente"
+              curl --fail "$PUBLIC_URL/docs"
+              exit 0
+            fi
+            echo "Intento $i: ACI todavía no responde"
+            sleep 10
+          done
+
+          echo "La API no respondió a tiempo en ACI"
+          exit 1
