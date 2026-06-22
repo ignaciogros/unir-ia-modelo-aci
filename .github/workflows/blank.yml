@@ -91,7 +91,8 @@ jobs:
             --location ${{ env.LOCATION }} \
             --cpu 1 --memory 1 \
             --os-type Linux \
-            --restart-policy Always
+            --restart-policy Always \
+            --secure-environment-variables "API_KEY=${{ secrets.API_KEY }}"
 
       - name: Verificar endpoint ACI desplegado
         run: |

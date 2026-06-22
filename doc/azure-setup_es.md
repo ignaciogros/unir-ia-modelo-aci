@@ -118,8 +118,19 @@ En el repositorio de GitHub:
 | Nombre | Valor |
 |---|---|
 | `AZURE_CREDENTIALS` | JSON completo del paso anterior |
+| `API_KEY` | Clave aleatoria para proteger `/predict` (ver más abajo) |
 
-Es el único secret necesario.
+Generar una clave aleatoria:
+
+```powershell
+-join ((65..90) + (97..122) + (48..57) | Get-Random -Count 32 | ForEach-Object { [char]$_ })
+```
+
+O con OpenSSL si está disponible:
+
+```powershell
+openssl rand -hex 32
+```
 
 ---
 

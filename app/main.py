@@ -1,9 +1,11 @@
+import os
 from pathlib import Path
 from typing import Dict, Any
 
 import joblib
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 
@@ -16,6 +18,14 @@ app = FastAPI(
     description="API sencilla para desplegar un modelo de Machine Learning con FastAPI, Docker, ACR, ACI y GitHub Actions.",
     version="1.0.0"
 )
+
+_API_KEY = os.getenv("API_KEY", "")
+_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def _check_api_key(key: str | None = Depends(_key_header)) -> None:
+    if _API_KEY and key != _API_KEY:
+        raise HTTPException(status_code=403, detail="API key inválida o ausente")
 
 
 # ---------------------------------------------------------
@@ -135,7 +145,7 @@ def health() -> Dict[str, str]:
 # 6. Endpoint de predicción
 # ---------------------------------------------------------
 
-@app.post("/predict")
+@app.post("/predict", dependencies=[Depends(_check_api_key)])
 def predict(data: IrisInput) -> Dict[str, Any]:
     try:
         input_data = np.array([
