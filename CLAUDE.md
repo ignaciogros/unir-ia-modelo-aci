@@ -55,6 +55,6 @@ Dockerfile          # Copies app/ into /app, runs uvicorn main:app
 
 ## GitHub Actions secrets required
 
-`REGISTRY_LOGIN_SERVER`, `REGISTRY_USERNAME`, `REGISTRY_PASSWORD`, `AZURE_BEARER_TOKEN`, `AZURE_SUBSCRIPTION_ID`, `RESOURCE_GROUP`, `DNS_LABEL`
+Solo se necesita **un único secret**: `AZURE_CREDENTIALS` — el JSON que devuelve `az ad sp create-for-rbac --json-auth`.
 
-The bearer token (`AZURE_BEARER_TOKEN`) is short-lived and must be refreshed manually — it is used instead of `azure/login` because Azure for Students subscriptions cannot create Service Principals.
+Los valores no sensibles (`ACR_NAME`, `RESOURCE_GROUP`, `DNS_LABEL`, etc.) están en el bloque `env:` del workflow y se editan directamente en el fichero. Ver `doc/azure-setup_es.md` para los pasos completos de configuración.
