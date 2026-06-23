@@ -217,7 +217,28 @@ az container logs `
 
 ---
 
-## 12. Desarrollo local
+## 12. Gestionar el contenedor ACI
+
+Parar y arrancar el contenedor evita consumir crédito cuando no se usa. La URL pública no cambia al reiniciarlo.
+
+```powershell
+# Parar (deja de facturar compute)
+az container stop --resource-group $RG --name $CONTAINER_NAME
+
+# Arrancar (tarda 30-60 segundos en estar disponible)
+az container start --resource-group $RG --name $CONTAINER_NAME
+
+# Ver estado
+az container show `
+  --resource-group $RG `
+  --name $CONTAINER_NAME `
+  --query "{estado:instanceView.state, fqdn:ipAddress.fqdn}" `
+  --output table
+```
+
+---
+
+## 13. Desarrollo local
 
 ```powershell
 # Instalar dependencias
