@@ -488,7 +488,7 @@ aws logs tail "/ecs/$TASK_FAMILY" --follow --region $REGION
 
 ## 16. Gestionar el servicio Fargate
 
-Fargate no tiene un equivalente directo a `az container stop/start`. Para evitar costes cuando no se usa, reduce el número de réplicas deseadas a cero.
+Parar el servicio evita consumir crédito cuando no se usa. A diferencia de ACI, **la IP pública cambia al reiniciarlo** — Fargate crea una tarea nueva con una IP nueva. Obtén la URL actualizada desde los logs del pipeline o con los comandos del paso 15.
 
 ```powershell
 # Parar (0 réplicas — deja de facturar compute)

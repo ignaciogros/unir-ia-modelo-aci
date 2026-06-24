@@ -24,11 +24,10 @@ PAYLOAD = {
 def test_home_endpoint():
     response = client.get("/")
     assert response.status_code == 200
-    data = response.json()
-    assert "message" in data
-    assert data["docs"] == "/docs"
-    assert data["health"] == "/health"
-    assert data["predict"] == "/predict"
+    assert "text/html" in response.headers["content-type"]
+    assert "/predict" in response.text
+    assert "/docs" in response.text
+    assert "/health" in response.text
 
 
 def test_health_endpoint():
