@@ -1,0 +1,27 @@
+{
+  "family": "task-entregable4b",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::AWS_ACCOUNT_ID:role/LabRole",
+  "containerDefinitions": [
+    {
+      "name": "iris-api",
+      "image": "AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/iris-api:latest",
+      "portMappings": [{ "containerPort": 8000, "protocol": "tcp" }],
+      "environment": [
+        { "name": "API_KEY", "value": "PLACEHOLDER" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/task-entregable4b",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "essential": true
+    }
+  ]
+}

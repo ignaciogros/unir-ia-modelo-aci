@@ -1,0 +1,150 @@
+name: CI-CD FastAPI ML model to AWS ECR and ECS Fargate
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+# ── Edita estos valores para que coincidan con tu entorno AWS ────────────────
+env:
+  AWS_REGION: us-east-1          # us-east-1 para AWS Academy; eu-west-1 para cuenta normal
+  ECR_REPOSITORY: iris-api
+  ECS_CLUSTER: cluster-entregable4b
+  ECS_SERVICE: svc-entregable4b
+  TASK_DEFINITION: aws/task-definition.json
+  CONTAINER_NAME: iris-api
+  PORT: 8000
+# ─────────────────────────────────────────────────────────────────────────────
+
+jobs:
+  build-test-push-deploy:
+    name: Build, test, push and deploy to ECS Fargate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r app/requirements.txt
+
+      - name: Train model
+        run: |
+          python app/train_model.py
+          test -f app/model/iris_model.joblib
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}   # necesario en AWS Academy Labs; eliminar en cuenta normal con IAM user
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        run: docker build -t ${{ env.CONTAINER_NAME }}:local .
+
+      - name: Smoke test (contenedor local)
+        run: |
+          docker run -d --name iris-smoke -p ${{ env.PORT }}:${{ env.PORT }} \
+            ${{ env.CONTAINER_NAME }}:local
+          for i in {1..20}; do
+            if curl --fail http://localhost:${{ env.PORT }}/health; then
+              docker rm -f iris-smoke
+              exit 0
+            fi
+            echo "Intento $i/20..."
+            sleep 3
+          done
+          docker rm -f iris-smoke
+          echo "Smoke test fallido: la API no arrancó"
+          exit 1
+
+      - name: Push a Amazon ECR
+        id: push-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE="$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
+          docker tag ${{ env.CONTAINER_NAME }}:local "$IMAGE"
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+
+      - name: Actualizar imagen, API_KEY y account ID en la definición de tarea
+        run: |
+          AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          sed "s/AWS_ACCOUNT_ID/$AWS_ACCOUNT/g" ${{ env.TASK_DEFINITION }} | \
+          jq --arg IMAGE "${{ steps.push-image.outputs.image }}" \
+             --arg KEY "${{ secrets.API_KEY }}" \
+            '.containerDefinitions[0].image = $IMAGE |
+             .containerDefinitions[0].environment |=
+               map(if .name == "API_KEY" then .value = $KEY else . end)' \
+          > /tmp/task-def-updated.json
+
+      - name: Registrar nueva revisión de la tarea en ECS
+        id: register-task
+        run: |
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file:///tmp/task-def-updated.json \
+            --query "taskDefinition.taskDefinitionArn" \
+            --output text)
+          echo "arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
+
+      - name: Deploy a ECS Fargate
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --task-definition ${{ steps.register-task.outputs.arn }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Esperar a que el servicio estabilice
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Verificar endpoint ECS desplegado
+        run: |
+          TASK_ARN=$(aws ecs list-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service-name ${{ env.ECS_SERVICE }} \
+            --query "taskArns[0]" \
+            --output text)
+
+          ENI_ID=$(aws ecs describe-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks "$TASK_ARN" \
+            --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value | [0]" \
+            --output text)
+
+          PUBLIC_IP=$(aws ec2 describe-network-interfaces \
+            --network-interface-ids "$ENI_ID" \
+            --query "NetworkInterfaces[0].Association.PublicIp" \
+            --output text)
+
+          URL="http://$PUBLIC_IP:${{ env.PORT }}"
+          echo "Verificando $URL/health ..."
+          for i in {1..30}; do
+            if curl --fail "$URL/health"; then
+              echo "API desplegada correctamente en $URL"
+              exit 0
+            fi
+            echo "Intento $i/30..."
+            sleep 10
+          done
+          echo "ERROR: la API no respondió a tiempo en ECS Fargate"
+          exit 1

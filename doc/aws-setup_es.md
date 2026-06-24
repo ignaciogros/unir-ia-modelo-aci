@@ -3,6 +3,8 @@
 Esta guía te lleva desde cero hasta tener el pipeline de CI/CD funcionando con **ECR** (registro de imágenes, equivalente a ACR) y **ECS Fargate** (ejecución de contenedores sin servidor, equivalente a ACI).  
 Todos los comandos usan **PowerShell** y **AWS CLI v2**.
 
+> **¿Usas AWS Academy Learner Lab?** Esta guía es para cuentas AWS estándar. Si trabajas con un Learner Lab (credenciales temporales, sin IAM, solo `us-east-1`), usa `awsacademy-setup_es.md`.
+
 ---
 
 ## 1. Requisitos previos
@@ -16,7 +18,24 @@ Todos los comandos usan **PowerShell** y **AWS CLI v2**.
 
 ## 2. Variables de entorno local
 
-Define estas variables en PowerShell. Deben coincidir **exactamente** con los valores `env:` del workflow.
+Define estas variables antes de ejecutar los comandos de los pasos siguientes. Deben coincidir **exactamente** con los valores `env:` del workflow.
+
+> **CloudShell vs PowerShell:** AWS CloudShell usa bash. La sintaxis de asignación es diferente a PowerShell: sin `$` al asignar, sin espacios alrededor de `=`, y `\` para continuar líneas (no `` ` ``).
+
+**Bash (CloudShell / Linux / macOS):**
+
+```bash
+REGION="eu-west-1"
+ECR_REPO="iris-api"
+ECS_CLUSTER="cluster-entregable4b"
+ECS_SERVICE="svc-entregable4b"
+TASK_FAMILY="task-entregable4b"
+CONTAINER_NAME="iris-api"
+PORT=8000
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+```
+
+**PowerShell (Windows local):**
 
 ```powershell
 $REGION         = "eu-west-1"
@@ -153,7 +172,7 @@ Anota los IDs (p. ej. `subnet-aabbccdd subnet-eeff0011`). Se necesitan uno o má
 
 ```powershell
 $SG_ID = aws ec2 create-security-group `
-  --group-name "sg-iris-api" `
+  --group-name "iris-api-sg" `
   --description "Acceso HTTP a iris-api" `
   --vpc-id $VPC_ID `
   --query "GroupId" `
@@ -178,7 +197,7 @@ aws ec2 authorize-security-group-ingress `
 
 ## 9. Crear el archivo de definición de tarea
 
-Crea el archivo `aws/task-definition.json` en el repositorio, sustituyendo `AWS_ACCOUNT_ID` y `REGION` por tus valores reales:
+Crea el archivo `aws/task-definition.json` en el repositorio. Deja `AWS_ACCOUNT_ID` y `REGION` como texto literal — el workflow los sustituirá en cada ejecución derivando el número de cuenta automáticamente, así no quedan expuestos en el repositorio:
 
 ```json
 {
@@ -210,22 +229,30 @@ Crea el archivo `aws/task-definition.json` en el repositorio, sustituyendo `AWS_
 }
 ```
 
-> El campo `API_KEY` contiene `PLACEHOLDER`. El workflow lo reemplaza en cada despliegue con el valor del secret `API_KEY` de GitHub antes de registrar la nueva revisión de la tarea.
+> `API_KEY` y `AWS_ACCOUNT_ID` son placeholders. El workflow los reemplaza en cada despliegue antes de registrar la nueva revisión de la tarea.
 
-Registra la definición en ECS (crea la revisión inicial):
+Registra la definición en ECS (crea la revisión inicial). El comando sustituye los placeholders usando los valores reales de tu sesión actual:
 
 ```powershell
+$AWS_ACCOUNT = aws sts get-caller-identity --query Account --output text
+(Get-Content aws\task-definition.json) `
+  -creplace 'AWS_ACCOUNT_ID', $AWS_ACCOUNT `
+  -creplace 'REGION', $REGION |
+  Set-Content aws\task-definition-resolved.json
+
 aws ecs register-task-definition `
-  --cli-input-json file://aws/task-definition.json `
+  --cli-input-json file://aws/task-definition-resolved.json `
   --region $REGION
 ```
 
-Añade el archivo al repositorio:
+Añade el archivo con los placeholders al repositorio (no el resuelto):
 
 ```powershell
 git add aws/task-definition.json
 git commit -m "Añadir definición de tarea ECS para despliegue en Fargate"
 ```
+
+> No hagas `git push` todavía — el pipeline se dispararía antes de que el servicio ECS exista (paso 10) y fallaría en el despliegue. Haz el push una vez completado el paso 10.
 
 ---
 
@@ -341,9 +368,21 @@ openssl rand -hex 32
 
 ---
 
-## 13. Ajustar los valores `env:` del workflow AWS
+## 13. Ajustar el workflow AWS
 
-Edita el bloque `env:` del workflow con tus valores reales:
+**13.1 — Eliminar el token de sesión** (no necesario con credenciales permanentes IAM):
+
+En `.github/workflows/aws.yml`, elimina la línea `aws-session-token` del paso de credenciales:
+
+```yaml
+- uses: aws-actions/configure-aws-credentials@v4
+  with:
+    aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+    aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    aws-region: ${{ env.AWS_REGION }}
+```
+
+**13.2 — Ajustar los valores `env:`** con tus valores reales:
 
 ```yaml
 env:
